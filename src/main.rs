@@ -773,7 +773,7 @@ impl DocSearcherApp {
             self.log("[open] 检测到 PDF 文件".to_string());
             if let Some(ref cmd_template) = self.config.pdf_reader {
                 let cmd = cmd_template
-                    .replace("{file}", &format!("\"{}\"", abs_path.display()))
+                    .replace("{file}", &abs_path.display().to_string())
                     .replace("{page}", &page.to_string())
                     .replace("{keyword}", keyword);
                 self.log(format!("[open] PDF 自定义命令模板: '{}'", cmd_template));
