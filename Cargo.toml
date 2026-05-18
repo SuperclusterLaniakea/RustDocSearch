@@ -1,0 +1,26 @@
+[package]
+name = "doc-searcher"
+version = "1.0.0"
+edition = "2021"
+
+[dependencies]
+tantivy = "0.22"
+sled = "0.34"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+walkdir = "2"
+notify = "6"
+md5 = "0.7"
+chrono = "0.4"
+pdf-extract = "0.7"
+docx-rs = "0.4"
+eframe = "0.27"
+rfd = "0.14"
+open = "5"
+anyhow = "1"
+jieba-rs = "0.7"
+bincode = "1"
+dirs = "5"
+tokio = { version = "1", features = ["full"] }
+shell-words = "1.1"
+csv = "1"
