@@ -23,4 +23,5 @@ bincode = "1"
 dirs = "5"
 tokio = { version = "1", features = ["full"] }
 shell-words = "1.1"
-csv = "1"
+pdf = "0.8"
+csv = "1.3"

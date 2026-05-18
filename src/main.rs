@@ -202,14 +202,12 @@ fn extract_pages(path: &Path, ext: &str) -> Result<Vec<(u32, String)>> {
             if text.trim().is_empty() {
                 return Ok(vec![]);
             }
-            // 按换页符 \x0c 分割，获得每页文本
             let pages: Vec<(u32, String)> = text
                 .split('\x0c')
                 .enumerate()
                 .filter(|(_, t)| !t.trim().is_empty())
                 .map(|(i, t)| (i as u32 + 1, t.trim().to_string()))
                 .collect();
-            // 如果分割后没有有效页，回退到整篇作为一页
             if pages.is_empty() {
                 Ok(vec![(1, text)])
             } else {
