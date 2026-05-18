@@ -312,7 +312,7 @@ impl DocSearcherApp {
             .join(".doc_searcher");
         std::fs::create_dir_all(&config_dir).ok();
         let config_path = config_dir.join("config.json");
-        let mut config = if config_path.exists() {
+        let config = if config_path.exists() {   // 移除 mut
             std::fs::read_to_string(&config_path)
                 .ok()
                 .and_then(|s| serde_json::from_str::<Config>(&s).ok())
@@ -399,10 +399,7 @@ impl DocSearcherApp {
     }
 
     fn load_database(&mut self, db_id: &str) -> Result<()> {
-        // 关闭当前数据库
         self.close_current_db();
-
-        // 查找数据库信息
         let db_info = self.config.databases.iter()
             .find(|d| d.id == db_id)
             .cloned()
@@ -438,7 +435,6 @@ impl DocSearcherApp {
     }
 
     fn close_current_db(&mut self) {
-        // 停止监控和索引
         self.stop_indexing();
         self._watcher = None;
         self._watcher_handle = None;
@@ -465,7 +461,6 @@ impl DocSearcherApp {
             last_index_time: None,
             index_subdir: "data".to_string(),
         };
-        // 确保目录结构
         let db_path = self.db_dir(&id);
         fs::create_dir_all(db_path.join(&db_info.index_subdir))?;
 
@@ -495,8 +490,8 @@ impl DocSearcherApp {
             .count()
     }
 
-    fn set_root_directory(&mut self, path: PathBuf) {
-        // 此功能已整合到新建数据库，保留但不再直接使用
+    fn set_root_directory(&mut self, _path: PathBuf) {   // 前缀下划线消除警告
+        // 已整合到新建数据库
     }
 
     fn save_config(&self) {
@@ -644,12 +639,15 @@ impl DocSearcherApp {
         }
 
         let ignore_case = self.config.ignore_case;
+
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let tokenized = tokenize_query(query_str, ignore_case);
             let query_parser = QueryParser::for_index(self.index.as_ref().unwrap(), vec![self.body_field]);
             let query = query_parser.parse_query(&tokenized)
                 .map_err(|e| anyhow::anyhow!("查询解析错误: {}", e))?;
-            let top_docs = reader.search(&query, &TopDocs::with_limit(500))
+            
+            let searcher = reader.searcher();                       // 通过 searcher() 获取 Searcher
+            let top_docs = searcher.search(&query, &TopDocs::with_limit(500))
                 .map_err(|e| anyhow::anyhow!("搜索错误: {}", e))?;
 
             let query_words: Vec<String> = tokenized.split_whitespace()
@@ -657,13 +655,14 @@ impl DocSearcherApp {
             if query_words.is_empty() { return Ok(()); }
 
             for (score, doc_address) in top_docs {
-                if let Ok(doc) = reader.doc::<TantivyDocument>(doc_address) {
+                if let Ok(doc) = searcher.doc::<TantivyDocument>(doc_address) {   // 使用 searcher.doc
                     let file_id = doc.get_first(self.file_id_field).and_then(|v| v.as_u64()).unwrap_or(0);
                     let location = doc.get_first(self.location_field).and_then(|v| v.as_u64()).unwrap_or(0);
                     if let Ok(Some(meta_bytes)) = meta_db.get(&file_id.to_le_bytes()) {
                         if let Ok(meta) = bincode::deserialize::<DocMeta>(&meta_bytes) {
                             let body_text = doc.get_first(self.body_field).and_then(|v| v.as_str()).unwrap_or("");
-                            let keyword_count = query_words.iter().map(|w| body_text.split(' ').filter(|&t| t == w).count()).sum();
+                            let keyword_count = query_words.iter()
+                                .map(|w| body_text.split(' ').filter(|&t| t == w).count()).sum();
                             let mut hits = Vec::new();
                             for kw in &query_words {
                                 let mut start = 0;
@@ -738,28 +737,80 @@ impl DocSearcherApp {
     }
 
     fn open_with_command(&mut self, file_path: &Path, page: u64, keyword: &str) {
+        self.log(format!(
+            "[open] 参数: file_path='{}', page={}, keyword='{}'",
+            file_path.display(), page, keyword
+        ));
+
         let abs_path = if file_path.is_absolute() {
+            self.log(format!("[open] 路径已是绝对路径: '{}'", file_path.display()));
             file_path.to_path_buf()
         } else {
-            if let Some(ref root) = self.root_dir {
-                root.join(file_path).canonicalize().unwrap_or_else(|_| root.join(file_path))
-            } else { file_path.to_path_buf() }
+            if let Some(root) = self.root_dir.clone() {
+                let joined = root.join(file_path);
+                self.log(format!("[open] 拼接根目录: root='{}', 拼接后='{}'", root.display(), joined.display()));
+                match joined.canonicalize() {
+                    Ok(canon) => {
+                        self.log(format!("[open] 规范化成功: '{}'", canon.display()));
+                        canon
+                    }
+                    Err(e) => {
+                        let fallback = root.join(file_path);
+                        self.log(format!("[open] 规范化失败: {}, 使用备用路径: '{}'", e, fallback.display()));
+                        fallback
+                    }
+                }
+            } else {
+                self.log(format!("[open] 无根目录，使用相对路径: '{}'", file_path.display()));
+                file_path.to_path_buf()
+            }
         };
+
+        self.log(format!("[open] 最终绝对路径: '{}'", abs_path.display()));
 
         let mut opened = false;
         if abs_path.extension().map_or(false, |e| e == "pdf") {
-            if let Some(ref cmd) = self.config.pdf_reader {
-                let cmd = cmd.replace("{file}", &format!("\"{}\"", abs_path.display()))
-                             .replace("{page}", &page.to_string())
-                             .replace("{keyword}", keyword);
+            self.log("[open] 检测到 PDF 文件".to_string());
+            if let Some(ref cmd_template) = self.config.pdf_reader {
+                let cmd = cmd_template
+                    .replace("{file}", &format!("\"{}\"", abs_path.display()))
+                    .replace("{page}", &page.to_string())
+                    .replace("{keyword}", keyword);
+                self.log(format!("[open] PDF 自定义命令模板: '{}'", cmd_template));
+                self.log(format!("[open] 替换后完整命令: '{}'", cmd));
+
                 let parts: Vec<&str> = cmd.split_whitespace().collect();
                 if !parts.is_empty() {
-                    if std::process::Command::new(parts[0]).args(&parts[1..]).spawn().is_ok() { opened = true; }
+                    self.log(format!("[open] 执行命令: 程序='{}', 参数={:?}", parts[0], &parts[1..]));
+                    match std::process::Command::new(parts[0]).args(&parts[1..]).spawn() {
+                        Ok(_) => {
+                            self.log("[open] 外部 PDF 阅读器启动成功".to_string());
+                            opened = true;
+                        }
+                        Err(e) => {
+                            self.log(format!("[open] 外部 PDF 阅读器启动失败: {}", e));
+                        }
+                    }
+                } else {
+                    self.log("[open] 命令模板解析后无有效程序".to_string());
                 }
+            } else {
+                self.log("[open] 未配置 PDF 阅读器，将使用系统默认方式".to_string());
             }
         }
-        if !opened { let _ = open::that(&abs_path); }
-        self.log(format!("打开文件: {} 位置: {}", abs_path.display(), page));
+
+        if !opened {
+            self.log(format!("[open] 使用系统默认程序打开: '{}'", abs_path.display()));
+            if let Err(e) = open::that(&abs_path) {
+                self.log(format!("[open] 系统默认打开失败: {}", e));
+            } else {
+                self.log("[open] 系统默认打开成功".to_string());
+            }
+        } else {
+            self.log("[open] 已由 PDF 阅读器打开，跳过系统默认调用".to_string());
+        }
+
+        self.log(format!("[open] 完成: 文件='{}', 目标页码/段落={}", abs_path.display(), page));
     }
 
     fn log(&mut self, msg: String) {
@@ -845,6 +896,7 @@ impl eframe::App for DocSearcherApp {
             self.clear_search();
             ctx.memory_mut(|mem| mem.request_focus(egui::Id::new("search_text")));
         }
+        // 注意：这里已删除多余的 }，使得顶部工具栏等代码仍在 update 函数内
 
         // 顶部工具栏
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
@@ -1076,7 +1128,7 @@ impl eframe::App for DocSearcherApp {
             });
         });
 
-        // 设置窗口（原样保留，增加了打开文件夹按钮）
+        // 设置窗口
         if self.show_settings {
             egui::Window::new("设置").collapsible(false).show(ctx, |ui| {
                 ui.label("索引存储基础目录:");
@@ -1185,7 +1237,6 @@ impl eframe::App for DocSearcherApp {
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
     }
 }
-
 
 // ---------- 索引辅助函数 ----------
 fn get_file_id(meta_db: &sled::Db, path: &Path) -> Result<Option<u64>> {
@@ -1398,6 +1449,7 @@ fn full_scan_and_index(
     }
     Ok(())
 }
+
 fn compare_index(meta_db: &sled::Db, root: &Path) -> (usize, usize, usize) {
     let mut new_count = 0;
     let mut mod_count = 0;
